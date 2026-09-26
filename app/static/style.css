@@ -415,6 +415,82 @@ textarea:focus, input[type="text"]:focus {
 
 .rel-table { max-width: 36em; }
 
+.audit-box {
+  margin-top: 22px;
+  border-top: 2px solid var(--line);
+  padding-top: 14px;
+}
+
+.audit-result {
+  margin-top: 12px;
+}
+
+.audit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.audit-witness {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  background: #fffefb;
+}
+
+.audit-witness:hover { border-color: var(--accent); }
+
+.audit-witness.active {
+  border-color: var(--accent);
+  background: #fff5e6;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.audit-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 14px;
+  cursor: pointer;
+}
+
+.audit-single { cursor: default; }
+
+.audit-name { font-weight: bold; min-width: 6em; }
+
+.audit-count {
+  color: var(--accent);
+  font-size: 0.9rem;
+  white-space: nowrap;
+}
+
+.audit-head.audit-single .audit-count { color: var(--muted); }
+
+.audit-detail { margin-top: 8px; }
+
+.audit-note {
+  color: var(--muted);
+  font-size: 0.9rem;
+  padding: 2px 0;
+}
+
+.audit-detail-head {
+  font-size: 0.88rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.audit-table { max-width: 52em; margin-bottom: 6px; }
+
+.audit-ops {
+  font-size: 0.82rem;
+  color: var(--muted);
+  font-family: ui-monospace, monospace;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
 .text-panel {
   margin-bottom: 12px;
   border: 1px solid var(--line);

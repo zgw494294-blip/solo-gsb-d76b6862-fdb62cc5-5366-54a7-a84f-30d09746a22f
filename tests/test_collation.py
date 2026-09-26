@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.collation import (  # noqa: E402
     EditionError,
     align,
+    alignment_audit,
     collate,
     edition,
     provenance,
@@ -539,6 +540,190 @@ def test_relationships_undecidable():
     assert res["decidable"] is False
     assert res["discriminative_count"] == 0
     assert res["tree"] == []
+
+
+def test_audit_unique_path():
+    # 无并列：路径数为 1（十进制字符串），无次小路径与差别
+    res = alignment_audit(
+        "abc",
+        [
+            {"name": "甲", "text": "abc"},
+            {"name": "乙", "text": "axc"},
+        ],
+    )
+    by = {w["name"]: w for w in res["witnesses"]}
+    assert by["甲"]["path_count"] == "1"
+    assert by["甲"]["cost"] == 0
+    assert by["甲"]["first_ops"] == ["match", "match", "match"]
+    assert by["甲"]["second_ops"] is None
+    assert by["甲"]["differences"] == []
+    assert by["乙"]["path_count"] == "1"
+    assert by["乙"]["cost"] == 1
+    assert by["乙"]["first_ops"] == ["match", "substitute", "match"]
+    assert by["乙"]["second_ops"] is None
+
+
+def test_audit_delete_tie():
+    # base="aa"、witness="a"：删第1字或第2字代价同为 1，共 2 条路径。
+    # 首条：匹配 < 删除 → [match, delete]；次小：[delete, match]。
+    res = alignment_audit("aa", [{"name": "甲", "text": "a"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "2" and w["cost"] == 1
+    assert w["first_ops"] == ["match", "delete"]
+    assert w["second_ops"] == ["delete", "match"]
+    diffs = {(d["coordinate"]["type"], d["coordinate"]["index"]): d for d in w["differences"]}
+    # 第1字：首条匹配「a」[0,1)，次小缺字 [0,0)
+    c1 = diffs[("char", 1)]
+    assert (c1["first"]["kind"], c1["first"]["reading"], c1["first"]["span"]) == (
+        "match", "a", [0, 1])
+    assert (c1["second"]["kind"], c1["second"]["reading"], c1["second"]["span"]) == (
+        "delete", "", [0, 0])
+    # 第1字后间隙：读法皆为空，但抄本半开区间有别（[1,1) vs [0,0)）
+    g1 = diffs[("gap", 1)]
+    assert g1["first"]["reading"] == "" and g1["second"]["reading"] == ""
+    assert g1["first"]["span"] == [1, 1] and g1["second"]["span"] == [0, 0]
+    # 第2字：首条缺字，次小匹配
+    c2 = diffs[("char", 2)]
+    assert (c2["first"]["kind"], c2["first"]["reading"]) == ("delete", "")
+    assert (c2["second"]["kind"], c2["second"]["reading"]) == ("match", "a")
+
+
+def test_audit_insert_tie():
+    # base="a"、witness="aa"：插在文首间隙或文末间隙代价同为 1，共 2 条。
+    res = alignment_audit("a", [{"name": "甲", "text": "aa"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "2"
+    assert w["first_ops"] == ["match", "insert"]
+    assert w["second_ops"] == ["insert", "match"]
+    diffs = {(d["coordinate"]["type"], d["coordinate"]["index"]): d for d in w["differences"]}
+    # 文首间隙：首条无插入 [0,0)，次小插入「a」[0,1)
+    g0 = diffs[("gap", 0)]
+    assert (g0["first"]["kind"], g0["first"]["span"]) == ("match", [0, 0])
+    assert (g0["second"]["kind"], g0["second"]["reading"], g0["second"]["span"]) == (
+        "insert", "a", [0, 1])
+    # 文末间隙相反
+    g1 = diffs[("gap", 1)]
+    assert (g1["first"]["kind"], g1["first"]["reading"], g1["first"]["span"]) == (
+        "insert", "a", [1, 2])
+    assert (g1["second"]["kind"], g1["second"]["span"]) == ("match", [2, 2])
+    # 字符「a」两侧读法相同，但抄本区间随插入位置而不同
+    c1 = diffs[("char", 1)]
+    assert c1["first"]["reading"] == c1["second"]["reading"] == "a"
+    assert c1["first"]["span"] == [0, 1] and c1["second"]["span"] == [1, 2]
+
+
+def test_audit_substitute_vs_delete_insert():
+    # base="ab"、witness="ba"：两次替换，或删除+匹配+插入，或插入+匹配+删除，
+    # 代价均为 2，共 3 条；首条 [替换,替换]，次小分歧最早可替换格：
+    res = alignment_audit("ab", [{"name": "甲", "text": "ba"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "3" and w["cost"] == 2
+    assert w["first_ops"] == ["substitute", "substitute"]
+    assert w["second_ops"] == ["delete", "match", "insert"]
+    labels = [d["coordinate"]["label"] for d in w["differences"]]
+    # 差别覆盖两个字符位与受插入影响的间隙，按底本坐标顺序
+    assert labels == ["第1字", "第1字后间隙", "第2字", "文末间隙"]
+    # 每条差别两侧值确不相同
+    for d in w["differences"]:
+        f, s = d["first"], d["second"]
+        assert (f["kind"], f["reading"], tuple(f["span"])) != (
+            s["kind"], s["reading"], tuple(s["span"]))
+
+
+def test_audit_path_count_big_as_decimal_string():
+    # 同串长差 3 时删除落点组合数 C(6,3)=20；路径数一律十进制字符串
+    res = alignment_audit("aaaaaa", [{"name": "甲", "text": "aaa"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "20"
+    assert isinstance(w["path_count"], str)
+    assert w["cost"] == 3
+    # 次小路径在最后一个可分歧格分歧：第三个匹配前先删一个 a
+    assert w["first_ops"] == [
+        "match", "match", "match", "delete", "delete", "delete"]
+    assert w["second_ops"] == [
+        "match", "match", "delete", "match", "delete", "delete"]
+
+    # 更大的组合数：C(20,10)=184756，验证精确大整数转字符串
+    res = alignment_audit("a" * 20, [{"name": "乙", "text": "a" * 10}])
+    assert res["witnesses"][0]["path_count"] == str(_binom(20, 10))
+    assert res["witnesses"][0]["path_count"] == "184756"
+
+
+def _binom(n, k):
+    k = min(k, n - k)
+    result = 1
+    for t in range(1, k + 1):
+        result = result * (n - k + t) // t
+    return result
+
+
+def test_audit_agrees_with_align_and_brute_force():
+    # 小串穷举全部操作序列：路径数、首条、次小、差别坐标应与审计一致
+    from functools import lru_cache
+
+    rank = {"match": 0, "substitute": 1, "delete": 2, "insert": 3}
+    seq_key = lambda seq: tuple(rank[o] for o in seq)
+
+    def brute(base, witness):
+        m, n = len(base), len(witness)
+
+        @lru_cache(None)
+        def go(i, j):
+            if i == m and j == n:
+                return 0, [()]
+            best, seqs = None, []
+            if i < m and j < n:
+                c, rest = go(i + 1, j + 1)
+                edge = 0 if base[i] == witness[j] else 1
+                best = edge + c
+                op = "match" if edge == 0 else "substitute"
+                seqs = [(op,) + s for s in rest]
+            if i < m:
+                c, rest = go(i + 1, j)
+                val = 1 + c
+                cand = [("delete",) + s for s in rest]
+                if best is None or val < best:
+                    best, seqs = val, cand
+                elif val == best:
+                    seqs += cand
+            if j < n:
+                c, rest = go(i, j + 1)
+                val = 1 + c
+                cand = [("insert",) + s for s in rest]
+                if best is None or val < best:
+                    best, seqs = val, cand
+                elif val == best:
+                    seqs += cand
+            return best, seqs
+
+        cost, seqs = go(0, 0)
+        return cost, sorted(set(seqs), key=seq_key)
+
+    import random
+    rng = random.Random(20260926)
+    for _ in range(100):
+        base = "".join(rng.choice("ab") for _ in range(rng.randint(1, 5)))
+        witness = "".join(rng.choice("ab") for _ in range(rng.randint(1, 5)))
+        cost, seqs = brute(base, witness)
+        w = alignment_audit(base, [{"name": "w", "text": witness}])["witnesses"][0]
+        assert w["cost"] == cost
+        assert w["path_count"] == str(len(seqs))
+        assert w["first_ops"] == list(seqs[0])
+        assert [e[0] for e in align(base, witness)] == list(seqs[0])
+        if len(seqs) == 1:
+            assert w["second_ops"] is None and w["differences"] == []
+        else:
+            assert w["second_ops"] == list(seqs[1])
+            assert w["differences"]  # 次小路径必在至少一个坐标读法有别
+            # 差别表按「间隙0、第1字、间隙1……」坐标顺序排列
+            order = []
+            for g in range(len(base) + 1):
+                order.append(("gap", g))
+                if g < len(base):
+                    order.append(("char", g + 1))
+            keys = [(d["coordinate"]["type"], d["coordinate"]["index"])
+                    for d in w["differences"]]
+            assert keys == sorted(keys, key=order.index)
 
 
 def run_all():

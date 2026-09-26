@@ -4,7 +4,8 @@
 把抄本对齐到底本，按底本坐标列出全部异文，并支持点击高亮、JSON 下载与
 **校定稿**（逐处选定读法，拼合完整校定文本并下载 UTF-8 纯文本）；还可录入一份
 **待鉴文本**做**来源分段**，求总分最低的完整来源路径，并依据抄本间异文构造
-**抄本异文距离树**（最小生成树与逐一剔除鉴别坐标后的边保留情况）。
+**抄本异文距离树**（最小生成树与逐一剔除鉴别坐标后的边保留情况），并对每份抄本
+做**最优对齐路径审计**（精确统计最小代价路径数，比较严格次小路径造成的坐标差别）。
 
 - 后端：Python + FastAPI
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤）
@@ -105,6 +106,24 @@ http://localhost:8000/docs 。
 - **无鉴别坐标**时显示「无法比较……不生成树」，不请求生成树内容。
 - 任一录入内容变化或重新对读，旧树立即清空；在途请求的过期响应同样作废。
 
+## 最优对齐路径审计
+
+- 点「开始对读」后，第六区随对读一并请求，对**每份抄本**沿用同一套编辑代价
+  （匹配 0，替换／删除／插入 1）做审计，底本／抄本输入复用同一校验。
+- **精确统计全部最小代价操作路径数**：不同操作序列分别计为不同路径；路径数
+  可能很大（服务端按任意精度整数计算），**以十进制字符串**显示与返回。
+- 页面对读、校定、来源分段与距离树沿用的仍是**首条路径**——操作序列字典序
+  最小者（**匹配 ＜ 替换 ＜ 删除 ＜ 插入**）；审计只展示并列情况，不改变现有结果。
+- 路径数大于 1 时，该区找出严格次小的最优路径（操作序列字典序紧次首条者），
+  **点击该抄本可展开**两条路径的坐标差别清单：
+  - 逐行列出有差别的**底本字符／间隙坐标**（按「间隙0、第1字、间隙1……」顺序）；
+  - 分别给出首条路径与严格次小路径在该坐标的**读法**（操作类型与文字；缺字、
+    无插入照常显示）与**抄本码点半开区间** `[start, end)`；
+  - 读法相同但抄本区间不同（插入位置、缺字位置变化）的坐标也一并列出；
+  - 展开区另附两条路径的完整操作序列（匹配／替换／删除／插入）。
+- 路径唯一的抄本显示「路径唯一」提示，无需比较。
+- 任一录入内容变化或重新对读，旧审计结果立即清空；在途请求的过期响应同样作废。
+
 ## API
 
 `POST /api/collate`
@@ -197,20 +216,48 @@ http://localhost:8000/docs 。
 - `/api/relationships` 返回的距离、树边、保留次数与坐标明细与页面第五区
   完全一致。
 
+`POST /api/alignment-audit`
+
+```json
+{
+  "base": "ab",
+  "witnesses": [
+    {"name": "甲本", "text": "ba"},
+    {"name": "乙本", "text": "ab"}
+  ]
+}
+```
+
+- 请求体与 `/api/collate` 相同（底本＋抄本，与待鉴文本无关）；底本、抄本
+  不合法同样返回 400。
+- 响应含 `base`、`witnesses` 与 `audit`：`audit.witnesses[]` 逐份抄本给出
+  - `cost`：最小对齐代价；
+  - `path_count`：**最小代价路径数（十进制字符串，精确值，不同操作序列分别
+    计数）**；
+  - `first_ops`：当前采用的首条路径（操作序列字典序最小，匹配＜替换＜删除＜
+    插入）的操作名序列，与 `/api/collate` 等接口的对齐一致；
+  - `second_ops`：严格次小最优路径的操作名序列，路径唯一时为 `null`；
+  - `differences`：首条与严格次小路径有差别的底本坐标（字符／间隙，按坐标
+    顺序），每项含 `coordinate`、`first` 与 `second`；两侧各给 `kind`
+    （`match`／`substitute`／`delete`／`insert`）、`reading`（读法文字，
+    缺字／无插入为空串）与 `span`（抄本码点半开区间 `[start, end)`）；
+    路径唯一时为空列表。
+- `/api/alignment-audit` 返回的路径数、次小路径与坐标差别与页面第六区完全一致。
+
 交互式接口文档见 http://localhost:8000/docs 。
 
 ## 目录结构
 
 ```
 app/
-  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships）
-  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树
+  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit）
+  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计
   static/
     index.html       页面（应用入口 http://localhost:8000/）
     style.css        样式
     app.js           前端逻辑
 tests/
-  test_collation.py  对齐、校勘、校定、来源分段与距离树测试（python3 tests/test_collation.py）
+  test_collation.py  对齐、校勘、校定、来源分段、距离树与路径审计测试（python3 tests/test_collation.py）
 Dockerfile
 docker-compose.yml   docker compose up --build 即启动应用（端口 8000）
 requirements.txt

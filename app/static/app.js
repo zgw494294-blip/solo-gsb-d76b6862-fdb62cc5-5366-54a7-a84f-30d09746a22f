@@ -29,6 +29,7 @@ let selections = {}; // "type:index" -> 所选读法；仅存非默认选择
 let lastEdition = null;
 let lastProv = null;
 let lastRel = null;
+let lastAudit = null;
 let editionTimer = null;
 let editionReqId = 0;
 let runToken = 0; // 每次发起对读或清空结果时自增，用于丢弃过期响应
@@ -114,6 +115,7 @@ function clearResults() {
   lastEdition = null;
   lastProv = null;
   lastRel = null;
+  lastAudit = null;
   $("#results").classList.add("hidden");
   $("#provenance-error").classList.add("hidden");
   $("#provenance-error").textContent = "";
@@ -121,6 +123,9 @@ function clearResults() {
   $("#relationships-error").classList.add("hidden");
   $("#relationships-error").textContent = "";
   $("#relationships-result").innerHTML = "";
+  $("#audit-error").classList.add("hidden");
+  $("#audit-error").textContent = "";
+  $("#audit-result").innerHTML = "";
 }
 
 /* ---------- 对读请求 ---------- */
@@ -166,6 +171,7 @@ async function doCollate() {
   lastEdition = null;
   lastProv = null;
   lastRel = null;
+  lastAudit = null;
   renderResult(data);
   scheduleEdition();
 
@@ -183,6 +189,11 @@ async function doCollate() {
   clearRelError();
   renderRelPlaceholder("抄本异文距离树计算中……");
   requestRelationships(token, base, witnesses);
+
+  // 最优对齐路径审计：与待鉴文本无关，随对读一并请求
+  clearAuditError();
+  renderAuditPlaceholder("最优对齐路径审计计算中……");
+  requestAlignmentAudit(token, base, witnesses);
 }
 
 async function requestProvenance(token, base, witnesses, query) {
@@ -683,6 +694,160 @@ function renderRel(rel) {
       table.appendChild(tbody);
       detail.appendChild(table);
     }
+
+    head.addEventListener("click", () => {
+      li.classList.toggle("active");
+      detail.classList.toggle("hidden");
+    });
+    li.append(head, detail);
+    list.appendChild(li);
+  }
+  box.appendChild(list);
+}
+
+/* ---------- 最优对齐路径审计 ---------- */
+
+const OP_TEXT = {
+  match: "匹配",
+  substitute: "替换",
+  delete: "删除",
+  insert: "插入",
+};
+
+async function requestAlignmentAudit(token, base, witnesses) {
+  let data;
+  try {
+    const resp = await fetch("/api/alignment-audit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base, witnesses }),
+    });
+    data = await resp.json();
+    if (!resp.ok) {
+      if (token === runToken) showAuditError(data.detail || "服务器校验失败。");
+      return;
+    }
+  } catch (e) {
+    if (token === runToken) showAuditError("无法连接服务器，请确认后端已启动。");
+    return;
+  }
+  if (token !== runToken) return; // 输入已变化，丢弃过期结果
+  lastAudit = data;
+  renderAudit(data.audit);
+}
+
+function showAuditError(msg) {
+  const el = $("#audit-error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+  $("#audit-result").innerHTML = "";
+}
+
+function clearAuditError() {
+  const el = $("#audit-error");
+  el.textContent = "";
+  el.classList.add("hidden");
+}
+
+function renderAuditPlaceholder(msg) {
+  const box = $("#audit-result");
+  box.innerHTML = "";
+  const div = document.createElement("div");
+  div.className = "empty";
+  div.textContent = msg;
+  box.appendChild(div);
+}
+
+function auditSideText(side, isChar) {
+  const kind = KIND_LABEL[side.kind] || side.kind;
+  const reading = readingLabel(side.reading, isChar);
+  return `${kind} ${reading} · 抄本区间 [${side.span[0]}, ${side.span[1]})`;
+}
+
+function renderAudit(audit) {
+  clearAuditError();
+  const box = $("#audit-result");
+  box.innerHTML = "";
+
+  const list = document.createElement("ol");
+  list.className = "audit-list";
+  for (const w of audit.witnesses) {
+    const li = document.createElement("li");
+    li.className = "audit-witness";
+
+    const multiple = w.path_count !== "1";
+    const head = document.createElement("div");
+    head.className = "audit-head";
+    const name = document.createElement("span");
+    name.className = "audit-name";
+    name.textContent = w.name;
+    const count = document.createElement("span");
+    count.className = "audit-count";
+    count.textContent =
+      `最小代价 ${w.cost} · 最优路径 ${w.path_count} 条` +
+      (multiple ? "（存在并列路径，点击展开差别）" : "（路径唯一）");
+    head.append(name, count);
+
+    const detail = document.createElement("div");
+    detail.className = "audit-detail";
+
+    if (!multiple) {
+      head.classList.add("audit-single");
+      const only = document.createElement("div");
+      only.className = "audit-note";
+      only.textContent =
+        `该抄本的最小代价（${w.cost}）对齐路径唯一，首条路径即唯一路径，无需比较。`;
+      detail.appendChild(only);
+      li.append(head, detail);
+      list.appendChild(li);
+      continue;
+    }
+
+    detail.classList.add("hidden");
+    const opHead = document.createElement("div");
+    opHead.className = "audit-detail-head";
+    opHead.textContent =
+      `严格次小路径（共 ${w.differences.length} 个底本坐标读法有别）`;
+    detail.appendChild(opHead);
+
+    const table = document.createElement("table");
+    table.className = "prov-path audit-table";
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    for (const text of ["底本坐标", "首条路径（当前采用）", "严格次小路径"]) {
+      const th = document.createElement("th");
+      th.textContent = text;
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+    for (const d of w.differences) {
+      const isChar = d.coordinate.type === "char";
+      const tr = document.createElement("tr");
+      const tdCoord = document.createElement("td");
+      tdCoord.textContent = d.coordinate.label;
+      const tdFirst = document.createElement("td");
+      tdFirst.textContent = auditSideText(d.first, isChar);
+      const tdSecond = document.createElement("td");
+      tdSecond.textContent = auditSideText(d.second, isChar);
+      tr.append(tdCoord, tdFirst, tdSecond);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    detail.appendChild(table);
+
+    const opsLine = document.createElement("div");
+    opsLine.className = "audit-ops";
+    opsLine.textContent =
+      `首条操作序列：${w.first_ops.map((op) => OP_TEXT[op] || op).join(" → ")}`;
+    detail.appendChild(opsLine);
+    const opsLine2 = document.createElement("div");
+    opsLine2.className = "audit-ops";
+    opsLine2.textContent =
+      `次小操作序列：${w.second_ops.map((op) => OP_TEXT[op] || op).join(" → ")}`;
+    detail.appendChild(opsLine2);
 
     head.addEventListener("click", () => {
       li.classList.toggle("active");

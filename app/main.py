@@ -6,7 +6,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .collation import EditionError, collate, edition, provenance, relationships
+from .collation import (
+    EditionError,
+    alignment_audit,
+    collate,
+    edition,
+    provenance,
+    relationships,
+)
 
 MAX_POINTS = 300
 MIN_WITNESSES = 2
@@ -53,6 +60,11 @@ class ProvenanceRequest(BaseModel):
     witnesses: list[WitnessIn]
     # 待鉴文本：与底本、抄本同规则校验并对齐到底本坐标
     query: str
+
+
+class AlignmentAuditRequest(BaseModel):
+    base: str
+    witnesses: list[WitnessIn]
 
 
 def _validate(base: str, witnesses: list[WitnessIn]):
@@ -137,6 +149,20 @@ def api_provenance(req: ProvenanceRequest):
         ],
         "query": {"text": req.query, "length": len(req.query)},
         "provenance": result,
+    }
+
+
+@app.post("/api/alignment-audit")
+def api_alignment_audit(req: AlignmentAuditRequest):
+    witnesses = _validate(req.base, req.witnesses)
+    result = alignment_audit(req.base, witnesses)
+    return {
+        "base": {"text": req.base, "length": len(req.base)},
+        "witnesses": [
+            {"name": w["name"], "text": w["text"], "length": len(w["text"])}
+            for w in witnesses
+        ],
+        "audit": result,
     }
 
 

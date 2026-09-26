@@ -12,6 +12,13 @@
 - 字符坐标：底本第 1 字 … 第 m 字（1 起计）。
 - 间隙坐标：间隙 0（文首）… 间隙 m（文末），间隙 g 位于第 g 字之后、
   第 g+1 字之前，首尾间隙一并计入。
+
+最优对齐路径审计（alignment_audit）
+-----------------------------------
+- 沿用上述编辑代价，精确统计全部最小代价操作路径（不同操作序列分别计数）。
+- 路径数可能很大，一律以十进制字符串返回。
+- 路径数大于 1 时取严格次小路径（操作序列字典序紧次首条者），逐条底本
+  坐标比较两条路径的读法（操作类型与文字）及抄本码点半开区间。
 """
 
 OP_MATCH = "match"
@@ -31,18 +38,12 @@ class EditionError(ValueError):
     """校定选择无效（重复坐标、无效坐标或读法不属于该坐标）。"""
 
 
-def align(base: str, witness: str):
-    """把抄本全局对齐到底本，返回操作事件列表（自左向右）。
+def _edit_costs(base: str, witness: str):
+    """最小编辑代价后缀表。
 
-    每个事件为三元组 (op, i, j)：
-      ("match",      i, j)  底本 base[i] 与抄本 witness[j] 相同
-      ("substitute", i, j)  底本 base[i] 被抄本 witness[j] 替换
-      ("delete",     i, None) 底本 base[i] 在抄本中缺字
-      ("insert",     None, j) 抄本 witness[j] 为插入字
-    i、j 均为 0 起索引。
+    cost[i][j] = 对齐 base[i:] 与 witness[j:] 的最小成本。
     """
     m, n = len(base), len(witness)
-    # cost[i][j] = 对齐 base[i:] 与 witness[j:] 的最小成本
     cost = [[0] * (n + 1) for _ in range(m + 1)]
     for i in range(m - 1, -1, -1):
         cost[i][n] = cost[i + 1][n] + 1
@@ -54,41 +55,145 @@ def align(base: str, witness: str):
             dele = 1 + cost[i + 1][j]
             ins = 1 + cost[i][j + 1]
             cost[i][j] = min(diag, dele, ins)
+    return cost
 
-    # 自 (0, 0) 起贪心走最小成本路径：每步在“可走通最优解”的操作里
-    # 选字典序最小者（匹配 < 替换 < 删除 < 插入），即得操作序列字典序
-    # 最小的最优路径。
+
+def _optimal_moves(base: str, witness: str, cost: list, i: int, j: int):
+    """列出格子 (i, j) 上所有可走通最优解的操作事件，按操作字典序排列。
+
+    顺序即：匹配 < 替换 < 删除 < 插入。
+    """
+    m, n = len(base), len(witness)
+    moves = []
+    if i < m and j < n and base[i] == witness[j] and cost[i][j] == cost[i + 1][j + 1]:
+        moves.append((OP_MATCH, i, j))
+    if i < m and j < n and cost[i][j] == 1 + cost[i + 1][j + 1]:
+        moves.append((OP_SUBSTITUTE, i, j))
+    if i < m and cost[i][j] == 1 + cost[i + 1][j]:
+        moves.append((OP_DELETE, i, None))
+    if j < n and cost[i][j] == 1 + cost[i][j + 1]:
+        moves.append((OP_INSERT, None, j))
+    return moves
+
+
+def _greedy_events(base: str, witness: str, cost: list, i: int = 0, j: int = 0):
+    """自 (i, j) 起贪心走最小成本路径。
+
+    每步在「可走通最优解」的操作里选字典序最小者（匹配 < 替换 < 删除 <
+    插入），即得自该格起操作序列字典序最小的最优路径。
+    """
+    m, n = len(base), len(witness)
     events = []
-    i = j = 0
     while i < m or j < n:
-        if (
-            i < m
-            and j < n
-            and base[i] == witness[j]
-            and cost[i][j] == cost[i + 1][j + 1]
-        ):
-            events.append((OP_MATCH, i, j))
+        event = _optimal_moves(base, witness, cost, i, j)[0]
+        events.append(event)
+        if event[0] in (OP_MATCH, OP_SUBSTITUTE):
             i += 1
             j += 1
-        elif i < m and j < n and cost[i][j] == 1 + cost[i + 1][j + 1]:
-            events.append((OP_SUBSTITUTE, i, j))
-            i += 1
-            j += 1
-        elif i < m and cost[i][j] == 1 + cost[i + 1][j]:
-            events.append((OP_DELETE, i, None))
+        elif event[0] == OP_DELETE:
             i += 1
         else:
-            events.append((OP_INSERT, None, j))
             j += 1
     return events
 
 
-def _witness_readings(base: str, witness: str):
-    """按底本坐标整理一份抄本的读法。
+def align(base: str, witness: str):
+    """把抄本全局对齐到底本，返回操作事件列表（自左向右）。
+
+    每个事件为三元组 (op, i, j)：
+      ("match",      i, j)  底本 base[i] 与抄本 witness[j] 相同
+      ("substitute", i, j)  底本 base[i] 被抄本 witness[j] 替换
+      ("delete",     i, None) 底本 base[i] 在抄本中缺字
+      ("insert",     None, j) 抄本 witness[j] 为插入字
+    i、j 均为 0 起索引。并列最优路径取操作序列字典序最小者
+    （匹配 < 替换 < 删除 < 插入）。
+    """
+    return _greedy_events(base, witness, _edit_costs(base, witness))
+
+
+def _path_counts(base: str, witness: str, cost: list) -> list:
+    """给定代价表，逐格统计最小成本路径数（后缀递推）。
+
+    paths[i][j] = 自 (i, j) 到 (m, n) 的最小成本路径条数；每一步可从
+    对角（匹配 0／替换 1）、向下删除（1）、向右插入（1）中选择，凡边
+    代价加后继代价恰等于本格代价的走法都计入。Python 大整数保证精确。
+    """
+    m = len(base)
+    n = len(witness)
+    paths = [[0] * (n + 1) for _ in range(m + 1)]
+    paths[m][n] = 1
+    for i in range(m, -1, -1):
+        for j in range(n, -1, -1):
+            if i == m and j == n:
+                continue
+            total = 0
+            if i < m and j < n:
+                edge = 0 if base[i] == witness[j] else 1
+                if edge + cost[i + 1][j + 1] == cost[i][j]:
+                    total += paths[i + 1][j + 1]
+            if i < m and 1 + cost[i + 1][j] == cost[i][j]:
+                total += paths[i + 1][j]
+            if j < n and 1 + cost[i][j + 1] == cost[i][j]:
+                total += paths[i][j + 1]
+            paths[i][j] = total
+    return paths
+
+
+def _second_events(base: str, witness: str, cost: list, first_events: list):
+    """严格次小最优路径的事件序列。
+
+    沿首条（操作序列字典序最小）路径逐格记录「比首路径本步更大、但仍可
+    走通最优解」的走法；取最后一个可分歧格上序列最小的替代走法，其后接
+    贪心（字典序最小）后缀。该路径在所有严格大于首路径的最优路径中字典
+    序最小（分歧点越靠后整体序列越小）。无替代走法（路径唯一）时返回
+    None。
+    """
+    i = j = 0
+    divergence = None  # (分歧时已走前缀, 替代事件)
+    prefix = []
+    for event in first_events:
+        moves = _optimal_moves(base, witness, cost, i, j)
+        rank = moves.index(event)
+        if rank + 1 < len(moves):  # 记录最新（最靠后）的可分歧格
+            divergence = (list(prefix), moves[rank + 1])
+        prefix.append(event)
+        if event[0] in (OP_MATCH, OP_SUBSTITUTE):
+            i += 1
+            j += 1
+        elif event[0] == OP_DELETE:
+            i += 1
+        else:
+            j += 1
+    if divergence is None:
+        return None
+    head, alt = divergence
+    i = j = 0
+    for event in head:
+        if event[0] in (OP_MATCH, OP_SUBSTITUTE):
+            i += 1
+            j += 1
+        elif event[0] == OP_DELETE:
+            i += 1
+        else:
+            j += 1
+    if alt[0] in (OP_MATCH, OP_SUBSTITUTE):
+        i += 1
+        j += 1
+    elif alt[0] == OP_DELETE:
+        i += 1
+    else:
+        j += 1
+    head.append(alt)
+    head.extend(_greedy_events(base, witness, cost, i, j))
+    return head
+
+
+def _readings_from_events(base: str, witness: str, events: list):
+    """按一条对齐操作路径，把读法整理到底本坐标。
 
     返回 (char_readings, gap_readings)：
-      char_readings[i]：底本第 i+1 字处，该抄本的读法；
-      gap_readings[g]：间隙 g 处，该抄本的插入情况。
+      char_readings[i]：底本第 i+1 字处，该路径下的读法；
+      gap_readings[g]：间隙 g 处，该路径下的插入情况。
     每条读法为 {"kind", "reading", "span"}，span 为抄本内的
     0 起半开区间 [start, end)；空区间表示抄本中的对应间隙位置。
     """
@@ -98,7 +203,7 @@ def _witness_readings(base: str, witness: str):
 
     i = j = 0
     opened_gap = -1  # 已记录到哪个间隙
-    for op, a, b in align(base, witness):
+    for op, a, b in events:
         if opened_gap < i:
             gap_readings[i] = {"kind": OP_MATCH, "reading": "", "span": [j, j]}
             opened_gap = i
@@ -134,6 +239,91 @@ def _witness_readings(base: str, witness: str):
     for g in range(opened_gap + 1, m + 1):
         gap_readings[g] = {"kind": OP_MATCH, "reading": "", "span": [j, j]}
     return char_readings, gap_readings
+
+
+def _witness_readings(base: str, witness: str):
+    """按底本坐标整理一份抄本的读法（取字典序最小的最优路径）。"""
+    return _readings_from_events(base, witness, align(base, witness))
+
+
+def _coord_views(char_readings: list, gap_readings: list):
+    """按「间隙0、第1字、间隙1、……、第m字、间隙m」的顺序展开坐标读法。
+
+    每项为 (coordinate, reading)，coordinate 含 type/index/label。
+    """
+    m = len(char_readings)
+    views = []
+    for g in range(m + 1):
+        views.append((
+            {"type": "gap", "index": g, "label": _gap_label(g, m)},
+            gap_readings[g],
+        ))
+        if g < m:
+            views.append((
+                {"type": "char", "index": g + 1, "label": f"第{g + 1}字"},
+                char_readings[g],
+            ))
+    return views
+
+
+def alignment_audit(base: str, witnesses: list) -> dict:
+    """最优对齐路径审计：逐份抄本统计最小代价路径并比较严格次小路径。
+
+    每份抄本返回：
+      name/text/length：抄本信息；
+      cost：最小对齐代价；
+      path_count：最小代价路径数（十进制字符串，精确值）；
+      first_ops：当前采用的首条路径（操作序列字典序最小者）的操作名；
+      second_ops：严格次小路径的操作名（路径唯一时为 null）；
+      differences：首条与严格次小路径读法不同的底本坐标，按坐标顺序，
+        每项含 coordinate 与 first/second 两侧的 kind、reading、
+        span（抄本码点半开区间）。
+    """
+    out = []
+    for w in witnesses:
+        witness = w["text"]
+        cost_table = _edit_costs(base, witness)
+        edit_cost = cost_table[0][0]
+        count = _path_counts(base, witness, cost_table)[0][0]
+        first_events = _greedy_events(base, witness, cost_table)
+        first_ops = [e[0] for e in first_events]
+
+        item = {
+            "name": w["name"],
+            "text": witness,
+            "length": len(witness),
+            "cost": edit_cost,
+            "path_count": str(count),
+            "first_ops": first_ops,
+            "second_ops": None,
+            "differences": [],
+        }
+
+        second_events = _second_events(base, witness, cost_table, first_events)
+        if second_events is not None:
+            item["second_ops"] = [e[0] for e in second_events]
+            first_chars, first_gaps = _readings_from_events(base, witness, first_events)
+            second_chars, second_gaps = _readings_from_events(base, witness, second_events)
+            for coordinate, fr in _coord_views(first_chars, first_gaps):
+                if coordinate["type"] == "gap":
+                    sr = second_gaps[coordinate["index"]]
+                else:
+                    sr = second_chars[coordinate["index"] - 1]
+                # 读法（操作类型或文字）或抄本码点半开区间有别即列出
+                if (fr["kind"], fr["reading"], tuple(fr["span"])) != (
+                    sr["kind"], sr["reading"], tuple(sr["span"])
+                ):
+                    item["differences"].append(
+                        {
+                            "coordinate": coordinate,
+                            "first": {"kind": fr["kind"], "reading": fr["reading"],
+                                      "span": list(fr["span"])},
+                            "second": {"kind": sr["kind"], "reading": sr["reading"],
+                                       "span": list(sr["span"])},
+                        }
+                    )
+        out.append(item)
+    return {"witnesses": out}
 
 
 def _gap_label(g: int, m: int) -> str:
