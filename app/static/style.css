@@ -371,6 +371,16 @@ textarea:focus, input[type="text"]:focus {
   margin-top: 12px;
 }
 
+.audit-box {
+  margin-top: 22px;
+  border-top: 2px solid var(--line);
+  padding-top: 14px;
+}
+
+.audit-result {
+  margin-top: 12px;
+}
+
 .rel-edges {
   margin: 0;
   padding: 0;
@@ -404,6 +414,14 @@ textarea:focus, input[type="text"]:focus {
 .rel-edge-head .rel-endpoints { font-weight: bold; min-width: 16em; }
 .rel-edge-head .rel-distance { color: var(--accent); white-space: nowrap; }
 .rel-edge-head .rel-retained { color: var(--muted); font-size: 0.88rem; white-space: nowrap; }
+
+.rel-edge-head.static { cursor: default; }
+
+.rel-edge-head .audit-count {
+  color: var(--accent);
+  font-family: ui-monospace, monospace;
+  word-break: break-all;
+}
 
 .rel-edge-detail { margin-top: 8px; }
 

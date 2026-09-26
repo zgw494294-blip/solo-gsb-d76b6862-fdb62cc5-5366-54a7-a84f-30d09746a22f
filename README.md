@@ -4,7 +4,9 @@
 把抄本对齐到底本，按底本坐标列出全部异文，并支持点击高亮、JSON 下载与
 **校定稿**（逐处选定读法，拼合完整校定文本并下载 UTF-8 纯文本）；还可录入一份
 **待鉴文本**做**来源分段**，求总分最低的完整来源路径，并依据抄本间异文构造
-**抄本异文距离树**（最小生成树与逐一剔除鉴别坐标后的边保留情况）。
+**抄本异文距离树**（最小生成树与逐一剔除鉴别坐标后的边保留情况）；另对每份
+抄本做**最优对齐路径审计**：精确统计最小代价操作路径数，并给出字典序严格
+次小路径与现行首条路径的坐标差别。
 
 - 后端：Python + FastAPI
 - 前端：原生 HTML / CSS / JavaScript（无构建步骤）
@@ -105,6 +107,19 @@ http://localhost:8000/docs 。
 - **无鉴别坐标**时显示「无法比较……不生成树」，不请求生成树内容。
 - 任一录入内容变化或重新对读，旧树立即清空；在途请求的过期响应同样作废。
 
+## 最优对齐路径审计
+
+- 沿用「开始对读」的同一套对齐规则与编辑代价（匹配 0；替换／删除／插入 1），
+  对每份抄本**精确统计所有最小代价操作路径**：不同操作序列算不同路径；
+  路径数可能极大（随文本长度组合级增长），以**十进制字符串**返回与显示。
+- 按「匹配＜替换＜删除＜插入」的操作序列字典序，**首条路径**即页面现行
+  对齐的取舍结果；路径数大于 1 时，另求**严格次小**的路径。
+- 页面第六区按抄本列出路径数；路径数大于 1 的抄本可**点击展开**，查看
+  严格次小路径与首条路径在底本字符／间隙坐标上的**读法与抄本码点半开区间**
+  差别（逐坐标列出两侧值；读法相同但区间不同的坐标同样列出）。
+- 任一录入内容变化或重新对读，旧审计结果立即清空；在途请求的过期响应
+  同样作废。
+
 ## API
 
 `POST /api/collate`
@@ -197,20 +212,44 @@ http://localhost:8000/docs 。
 - `/api/relationships` 返回的距离、树边、保留次数与坐标明细与页面第五区
   完全一致。
 
+`POST /api/alignment-audit`
+
+```json
+{
+  "base": "天地人",
+  "witnesses": [
+    {"name": "甲本", "text": "天地人"},
+    {"name": "乙本", "text": "天地間人"}
+  ]
+}
+```
+
+- 请求体与 `/api/collate` 相同（底本＋抄本），复用同一套输入校验，
+  不合法同样返回 400。
+- 响应含 `base`、`witnesses` 与 `audit`：`audit.witnesses[]` 按录入顺序
+  逐抄本给出 `name`、`path_count`（最小代价操作路径数，**十进制字符串**）
+  与 `alternative`：
+  - 路径唯一（`path_count` 为 `"1"`）时 `alternative` 为 `null`；
+  - 否则 `alternative.differences[]` 逐项给出严格次小路径与首条路径
+    有差别的坐标：`coordinate`（`type`／`index`／`label`）与两侧值
+    `first`／`second`，各含 `kind`、`reading` 与抄本码点半开区间
+    `span`（`[start, end)`）。
+- `/api/alignment-audit` 返回的路径数与坐标差别与页面第六区完全一致。
+
 交互式接口文档见 http://localhost:8000/docs 。
 
 ## 目录结构
 
 ```
 app/
-  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships）
-  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树
+  main.py            FastAPI 入口与参数校验（/api/collate、/api/edition、/api/provenance、/api/relationships、/api/alignment-audit）
+  collation.py       最小编辑距离对齐 + 异文汇总 + 校定稿拼合 + 待鉴来源分段 + 抄本异文距离树 + 最优对齐路径审计
   static/
     index.html       页面（应用入口 http://localhost:8000/）
     style.css        样式
     app.js           前端逻辑
 tests/
-  test_collation.py  对齐、校勘、校定、来源分段与距离树测试（python3 tests/test_collation.py）
+  test_collation.py  对齐、校勘、校定、来源分段、距离树与路径审计测试（python3 tests/test_collation.py）
 Dockerfile
 docker-compose.yml   docker compose up --build 即启动应用（端口 8000）
 requirements.txt

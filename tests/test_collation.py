@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from app.collation import (  # noqa: E402
     EditionError,
     align,
+    alignment_audit,
     collate,
     edition,
     provenance,
@@ -539,6 +540,94 @@ def test_relationships_undecidable():
     assert res["decidable"] is False
     assert res["discriminative_count"] == 0
     assert res["tree"] == []
+
+
+def test_alignment_audit_unique_path():
+    # 完全一致：仅 1 条最优路径，无替代路径
+    res = alignment_audit("abc", [{"name": "甲", "text": "abc"}])
+    w = res["witnesses"][0]
+    assert w["name"] == "甲"
+    assert w["path_count"] == "1"
+    assert w["alternative"] is None
+
+
+def test_alignment_audit_substitute_vs_delete_insert():
+    # base="ab"、抄本="ba"：最优代价 2，共 3 条路径
+    # [替换,替换] ＜ [删除,匹配,插入] ＜ [插入,匹配,删除]
+    res = alignment_audit("ab", [{"name": "甲", "text": "ba"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "3"
+    diffs = {(d["coordinate"]["type"], d["coordinate"]["index"]): d
+             for d in w["alternative"]["differences"]}
+    # 首条 [替换,替换] 与次小 [删除,匹配,插入]：两字读法全变，
+    # 间隙1 读法同为空但抄本区间不同，间隙2 由无插入变为插入
+    assert set(diffs) == {("char", 1), ("gap", 1), ("char", 2), ("gap", 2)}
+    assert diffs[("char", 1)]["first"] == {
+        "kind": "substitute", "reading": "b", "span": [0, 1]}
+    assert diffs[("char", 1)]["second"] == {
+        "kind": "delete", "reading": "", "span": [0, 0]}
+    assert diffs[("gap", 1)]["first"] == {
+        "kind": "match", "reading": "", "span": [1, 1]}
+    assert diffs[("gap", 1)]["second"] == {
+        "kind": "match", "reading": "", "span": [0, 0]}
+    assert diffs[("char", 2)]["first"] == {
+        "kind": "substitute", "reading": "a", "span": [1, 2]}
+    assert diffs[("char", 2)]["second"] == {
+        "kind": "match", "reading": "b", "span": [0, 1]}
+    assert diffs[("gap", 2)]["first"] == {
+        "kind": "match", "reading": "", "span": [2, 2]}
+    assert diffs[("gap", 2)]["second"] == {
+        "kind": "insert", "reading": "a", "span": [1, 2]}
+
+
+def test_alignment_audit_second_path_late_fork():
+    # base="aaa"、抄本="aa"：删除可落在 3 个位置，共 3 条路径；
+    # 首步只有匹配可行，分叉发生在第二步
+    # [匹配,匹配,删除] ＜ [匹配,删除,匹配] ＜ [删除,匹配,匹配]
+    res = alignment_audit("aaa", [{"name": "甲", "text": "aa"}])
+    w = res["witnesses"][0]
+    assert w["path_count"] == "3"
+    diffs = {(d["coordinate"]["type"], d["coordinate"]["index"]): d
+             for d in w["alternative"]["differences"]}
+    assert set(diffs) == {("char", 2), ("gap", 2), ("char", 3)}
+    assert diffs[("char", 2)]["first"] == {
+        "kind": "match", "reading": "a", "span": [1, 2]}
+    assert diffs[("char", 2)]["second"] == {
+        "kind": "delete", "reading": "", "span": [1, 1]}
+    assert diffs[("char", 3)]["first"] == {
+        "kind": "delete", "reading": "", "span": [2, 2]}
+    assert diffs[("char", 3)]["second"] == {
+        "kind": "match", "reading": "a", "span": [1, 2]}
+    # 间隙2 读法同为无插入，但对应抄本区间不同
+    assert diffs[("gap", 2)]["first"] == {
+        "kind": "match", "reading": "", "span": [2, 2]}
+    assert diffs[("gap", 2)]["second"] == {
+        "kind": "match", "reading": "", "span": [1, 1]}
+
+
+def test_alignment_audit_path_count_is_decimal_string():
+    # 10 个相同字对齐 5 个相同字：5 匹配＋5 删除的任意排列，C(10,5)=252
+    res = alignment_audit("a" * 10, [{"name": "甲", "text": "a" * 5}])
+    w = res["witnesses"][0]
+    assert isinstance(w["path_count"], str)
+    assert w["path_count"] == "252"
+    assert w["alternative"] is not None
+
+
+def test_alignment_audit_per_witness():
+    # 逐抄本各自统计；唯一插入位置的抄本只有 1 条路径
+    res = alignment_audit(
+        "天地人",
+        [
+            {"name": "甲", "text": "天地人"},
+            {"name": "乙", "text": "天地間人"},
+        ],
+    )
+    assert [w["name"] for w in res["witnesses"]] == ["甲", "乙"]
+    assert res["witnesses"][0]["path_count"] == "1"
+    assert res["witnesses"][0]["alternative"] is None
+    assert res["witnesses"][1]["path_count"] == "1"
+    assert res["witnesses"][1]["alternative"] is None
 
 
 def run_all():
